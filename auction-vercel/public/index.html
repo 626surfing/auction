@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>課堂即時競拍市場</title>
+<style>
+:root{--bg:#f4f6fa;--card:#fff;--tx:#1d2433;--mut:#6b7488;--bd:#dde2ec;--bl:#2563eb;--rd:#dc2626;--gr:#16a34a}
+@media(prefers-color-scheme:dark){:root{--bg:#121722;--card:#1b2230;--tx:#e8ecf4;--mut:#93a0b8;--bd:#2c3547}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Noto Sans TC",sans-serif;background:var(--bg);color:var(--tx);padding:12px;max-width:900px;margin:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+h1{font-size:20px;margin:6px 0 12px}h2{font-size:16px;margin:0 0 10px}
+input,select,button{font:inherit;padding:10px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--tx)}
+button{background:var(--bl);color:#fff;border:0;cursor:pointer;font-weight:600}button.g{background:var(--gr)}button.r{background:var(--rd)}button.s{background:var(--mut)}
+input{width:100%}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}.row>*{flex:1;min-width:90px}.row>button{flex:0 0 auto}
+.chips button{background:var(--bd);color:var(--tx);margin:0 6px 6px 0}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:5px;border-bottom:1px solid var(--bd);text-align:center}td input{padding:6px;text-align:center}
+.big{font-size:32px;font-weight:700;text-align:center}.mut{color:var(--mut);font-size:13px}.err{color:var(--rd);min-height:20px}
+.buy{color:var(--bl)}.sell{color:var(--rd)}.hide{display:none}
+.stat{display:flex;gap:8px;flex-wrap:wrap}.stat div{flex:1;min-width:100px;background:var(--bg);border-radius:8px;padding:8px;text-align:center}.stat b{display:block;font-size:20px}
+canvas{width:100%;height:240px;display:block}
+.book td{font-size:15px}.ask td:first-child{color:var(--rd);font-weight:600}.bid td:first-child{color:var(--bl);font-weight:600}
+</style>
+</head>
+<body>
+<h1>📈 課堂即時競拍市場</h1>
+
+<!-- 首頁 -->
+<div id="home">
+  <div class="card"><h2>學生加入市場</h2>
+    <div class="row"><input id="nick" placeholder="輸入你的暱稱" maxlength="12"></div>
+    <div class="mut" style="margin-bottom:8px">點選老師設定的班級：</div>
+    <div id="mlist" class="chips"></div><div class="err" id="jerr"></div>
+  </div>
+  <div class="card"><h2>教師入口</h2>
+    <div class="row"><input id="pw" type="password" placeholder="教師密碼"><button onclick="tLogin()">進入</button></div><div class="err" id="perr"></div>
+  </div>
+</div>
+
+<!-- 教師 -->
+<div id="teacher" class="hide">
+  <div class="card"><h2>① 建立 / 載入市場</h2>
+    <div class="row"><input id="tname" placeholder="班級名稱（例：二年三班）"><button onclick="loadMarket()">載入 / 建立</button></div>
+    <div id="tchips" class="chips"></div>
+    <div id="tconf" class="hide">
+      <div class="row"><label>交易時間<select id="tdur"><option>3</option><option selected>4</option><option>5</option></select></label>
+        <label>價格下限<input id="tfloor" type="number" placeholder="不限"></label>
+        <label>價格上限<input id="tcap" type="number" placeholder="不限"></label></div>
+      <div class="row">
+        <label>買家人數<input id="nb" type="number" value="10" min="1"></label>
+        <label>願付價 高<input id="bhi" type="number" value="100"></label>
+        <label>願付價 低<input id="blo" type="number" value="55"></label>
+        <label>資金<input id="bcash" type="number" value="120"></label></div>
+      <div class="row">
+        <label>賣家人數<input id="ns" type="number" value="10" min="1"></label>
+        <label>成本 低<input id="slo" type="number" value="30"></label>
+        <label>成本 高<input id="shi" type="number" value="80"></label>
+        <button class="s" onclick="gen()">自動產生</button></div>
+      <div class="row" style="align-items:flex-start">
+        <div><b class="buy">買家（願付價／資金）</b><table id="tb"></table></div>
+        <div><b class="sell">賣家（成本）</b><table id="ts"></table></div></div>
+      <div class="row"><button class="g" onclick="saveMarket()">💾 儲存設定</button><span id="smsg" class="mut"></span></div>
+    </div>
+  </div>
+  <div id="tctl" class="card hide"><h2>② 控制交易</h2>
+    <div class="row"><button class="g" onclick="act('start')">▶ 開始交易</button><button class="r" onclick="act('stop')">■ 提前結束</button>
+      <button class="s" onclick="if(confirm('開始新一回合？（上一回合資料仍保留在資料庫與Excel）'))act('reset')">↻ 新回合</button>
+      <button onclick="exportX()">⬇ 匯出 Excel</button></div>
+    <div class="stat"><div>狀態<b id="tst">-</b></div><div>倒數<b id="ttm">-</b></div><div>成交筆數<b id="tcnt">0</b></div><div>最新成交價<b id="tlast">-</b></div></div>
+  </div>
+  <div id="tlive" class="hide">
+    <div class="card"><h2>③ 即時狀況（每10秒更新）</h2>
+      <div class="row"><div><b>賣單（低→高）</b><table class="book" id="tasks"></table></div><div><b>買單（高→低）</b><table class="book" id="tbids"></table></div></div>
+      <div id="tres"></div><canvas id="tcv"></canvas>
+      <table id="tpart" style="margin-top:10px"></table></div>
+  </div>
+</div>
+
+<!-- 學生 -->
+<div id="student" class="hide">
+  <div class="card"><div class="row"><div><b id="sname"></b><div class="mut" id="sid"></div></div><div class="big" id="stm" style="flex:0 0 auto">--:--</div></div>
+    <div id="sstat" class="mut"></div></div>
+  <div id="sres" class="card hide"></div>
+  <div id="strade" class="card hide"><div class="mut">成交價</div><div class="big" id="sprice"></div><div id="sprofit" class="mut" style="text-align:center"></div></div>
+  <div id="sact" class="card">
+    <div class="row"><button class="s" onclick="adj(-1)">－</button><input id="sp" type="number" inputmode="decimal" placeholder="輸入價格"><button class="s" onclick="adj(1)">＋</button></div>
+    <div class="row"><button id="sbtn" onclick="submitOrder()" style="flex:1">送出</button><button class="s" onclick="cancelOrder()">撤單</button></div>
+    <div class="err" id="serr"></div><div class="mut" id="sopen"></div>
+  </div>
+  <div class="card"><h2>五檔委託簿</h2>
+    <table class="book"><tr><th>賣價</th><th>數量</th></tr><tbody id="sasks"></tbody></table>
+    <div class="mut" style="text-align:center;margin:6px">— 最新成交價：<b id="slast">-</b> —</div>
+    <table class="book"><tr><th>買價</th><th>數量</th></tr><tbody id="sbids"></tbody></table></div>
+  <div class="card"><h2>成交價走勢</h2><canvas id="scv"></canvas></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let PW='',MK='',SLOT=null,ROLE=null,mode='',timer=null,remain=0,lastFetch=0;
+const api=async(u,b,h={})=>{const o=b?{method:'POST',headers:{'Content-Type':'application/json','x-pw':PW,...h},body:JSON.stringify(b)}:{headers:{'x-pw':PW}};return (await fetch(u,o)).json()};
+const fmt=n=>n==null?'-':Math.round(n*100)/100;
+const mmss=ms=>{const s=Math.ceil(ms/1000);return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')};
+const show=id=>{['home','teacher','student'].forEach(x=>$(x).classList.toggle('hide',x!==id))};
+
+// ---------- 首頁 ----------
+async function listMarkets(){const l=await api('/api/markets');$('mlist').innerHTML=l.length?'':'<span class="mut">目前沒有市場</span>';
+  l.forEach(m=>{const b=document.createElement('button');b.textContent=m.name+(m.status==='running'?' 🟢':'');b.onclick=()=>join(m.name);$('mlist').appendChild(b)});}
+async function join(name){const nick=$('nick').value.trim();if(!nick){$('jerr').textContent='請先輸入暱稱';return}
+  const r=await api('/api/join',{market:name,nick});if(r.err){$('jerr').textContent=r.err;return}
+  MK=name;SLOT=r.slot;mode='s';localStorage.setItem('sess',JSON.stringify({MK,SLOT,nick:r.nick}));$('sname').textContent=r.nick;show('student');poll()}
+async function tLogin(){const r=await api('/api/teacher/login',{pw:$('pw').value});if(r.err){$('perr').textContent=r.err;return}
+  PW=$('pw').value;show('teacher');tChips()}
+async function tChips(){const l=await api('/api/markets');$('tchips').innerHTML='';l.forEach(m=>{const b=document.createElement('button');b.textContent=m.name;b.onclick=()=>{$('tname').value=m.name;loadMarket()};$('tchips').appendChild(b)})}
+
+// ---------- 教師 ----------
+let B=[],S=[];
+function renderTables(){
+  $('tb').innerHTML='<tr><th>#</th><th>願付價</th><th>資金</th></tr>'+B.map((b,i)=>`<tr><td>${i+1}</td><td><input type="number" value="${b.value}" onchange="B[${i}].value=+this.value"></td><td><input type="number" value="${b.cash}" onchange="B[${i}].cash=+this.value"></td></tr>`).join('');
+  $('ts').innerHTML='<tr><th>#</th><th>成本</th></tr>'+S.map((s,i)=>`<tr><td>${i+1}</td><td><input type="number" value="${s.value}" onchange="S[${i}].value=+this.value"></td></tr>`).join('')}
+const lerp=(n,a,b)=>Array.from({length:n},(_,i)=>n===1?a:Math.round(a+(b-a)*i/(n-1)));
+function gen(){const nb=+$('nb').value,ns=+$('ns').value,cash=+$('bcash').value;
+  B=lerp(nb,+$('bhi').value,+$('blo').value).map(v=>({value:v,cash}));S=lerp(ns,+$('slo').value,+$('shi').value).map(v=>({value:v}));renderTables()}
+async function loadMarket(){const name=$('tname').value.trim();if(!name)return;MK=name;
+  const r=await api('/api/teacher/market?name='+encodeURIComponent(name));$('tconf').classList.remove('hide');
+  if(r.none){gen();$('smsg').textContent='新市場：請調整後儲存'}
+  else{const m=r.market;$('tdur').value=m.duration;$('tfloor').value=m.floor??'';$('tcap').value=m.cap??'';
+    B=r.slots.filter(s=>s.role==='buy').map(s=>({value:s.value,cash:s.cash}));S=r.slots.filter(s=>s.role==='sell').map(s=>({value:s.value}));
+    $('nb').value=B.length;$('ns').value=S.length;renderTables();$('smsg').textContent='已載入上次設定'}
+  $('tctl').classList.remove('hide');$('tlive').classList.remove('hide');mode='t';poll()}
+async function saveMarket(){const r=await api('/api/teacher/market',{name:MK,duration:$('tdur').value,floor:$('tfloor').value,cap:$('tcap').value,buyers:B,sellers:S});
+  $('smsg').textContent=r.err||(r.locked?'已儲存（交易進行中，僅更新時間與價格限制）':'已儲存 ✔');tChips();poll()}
+async function act(a){if(a==='start')await saveMarket();await api('/api/teacher/'+a,{name:MK});poll()}
+function exportX(){location.href='/api/export?name='+encodeURIComponent(MK)+'&pw='+encodeURIComponent(PW)}
+
+// ---------- 輪詢（每10秒）與倒數 ----------
+async function poll(){clearTimeout(window._p);
+  const u=mode==='t'?'/api/state?market='+encodeURIComponent(MK):'/api/state?market='+encodeURIComponent(MK)+'&slot='+SLOT;
+  const s=await api(u);if(s.err){if(mode==='s')alert(s.err);return}
+  remain=s.remaining;lastFetch=Date.now();mode==='t'?renderT(s):renderS(s);
+  window._p=setTimeout(poll,10000)}
+setInterval(()=>{const left=Math.max(0,remain-(Date.now()-lastFetch));const t=remain?mmss(left):'--:--';
+  if(mode==='s')$('stm').textContent=t;else if(mode==='t')$('ttm').textContent=t;
+  if(remain&&left<=0&&Date.now()-lastFetch>1000){remain=0;poll()}},500);
+
+const ST={setup:'準備中',running:'交易中',ended:'已結束'};
+function bookRows(rows,cls){return rows.length?rows.map(r=>`<tr class="${cls}"><td>${r[0]}</td><td>${r[1]}</td></tr>`).join(''):'<tr><td colspan=2 class="mut">—</td></tr>'}
+function resHTML(r){return `<div class="stat"><div>消費者剩餘<b class="buy">${fmt(r.cs)}</b></div><div>生產者剩餘<b class="sell">${fmt(r.ps)}</b></div><div>市場總剩餘<b>${fmt(r.total)}</b></div><div>市場效率<b>${fmt(r.eff)}%</b></div></div>
+<div class="mut" style="margin-top:6px">成交 ${r.qty} 筆／理論均衡 ${r.eqQ} 筆／理論最大總剩餘 ${fmt(r.max)}</div>`}
+
+function renderT(s){$('tst').textContent=ST[s.status];$('tcnt').textContent=s.trades.length;$('tlast').textContent=s.trades.length?s.trades.at(-1).price:'-';
+  $('tasks').innerHTML=bookRows(s.asks,'ask');$('tbids').innerHTML=bookRows(s.bids,'bid');
+  $('tres').innerHTML=s.results&&s.status!=='setup'?resHTML(s.results):'';
+  drawChart($('tcv'),s.trades,s.status==='ended'?s.results:null,s.status!=='setup'?s.results:null);
+  $('tpart').innerHTML='<tr><th>暱稱</th><th>身分</th><th>成本/願付</th><th>資金</th><th>成交價</th></tr>'+s.slots.map(p=>`<tr><td>${p.nick||'<span class=mut>未加入</span>'}</td><td class="${p.role}">${p.role==='buy'?'買家':'賣家'}</td><td>${p.value}</td><td>${p.role==='buy'?p.cash:'-'}</td><td>${fmt(p.price)}</td></tr>`).join('')}
+
+function renderS(s){const me=s.me;if(!me)return;ROLE=me.role;
+  $('sid').innerHTML=`身分：<b class="${me.role}">${me.role==='buy'?'買家':'賣家'}</b>　${me.role==='buy'?`最高願付價 ${me.value}／資金 ${me.cash}`:`成本 ${me.value}`}`;
+  $('sstat').textContent=`${s.name||''}狀態：${ST[s.status]}${s.floor!=null?`　價格下限 ${s.floor}`:''}${s.cap!=null?`　上限 ${s.cap}`:''}`;
+  $('sbtn').textContent=me.role==='buy'?'送出買價':'送出賣價';
+  $('strade').classList.toggle('hide',!me.done);
+  if(me.done){$('sprice').textContent=me.price;$('sprofit').textContent=(me.role==='buy'?'消費者剩餘 ':'生產者剩餘 ')+fmt(me.profit)}
+  $('sact').classList.toggle('hide',me.done||s.status!=='running');
+  $('sopen').textContent=me.open!=null?`目前掛單：${me.open}`:'';
+  $('sasks').innerHTML=bookRows([...s.asks].reverse(),'ask');$('sbids').innerHTML=bookRows(s.bids,'bid');
+  $('slast').textContent=s.trades.length?s.trades.at(-1).price:'-';
+  $('sres').classList.toggle('hide',!s.results);if(s.results)$('sres').innerHTML='<h2>本回合結果</h2>'+resHTML(s.results)+'<canvas id="rcv" style="margin-top:8px"></canvas>';
+  drawChart($('scv'),s.trades,null,null);if(s.results)drawChart($('rcv'),s.trades,s.results,s.results)}
+
+async function submitOrder(){const p=$('sp').value;$('serr').textContent='';
+  const r=await api('/api/order',{market:MK,slot:SLOT,price:p});if(r.err)$('serr').textContent=r.err;else if(r.traded!=null)$('serr').textContent='';poll()}
+async function cancelOrder(){await api('/api/cancel',{market:MK,slot:SLOT});poll()}
+function adj(d){const e=$('sp');e.value=(+e.value||0)+d}
+
+// ---------- 圖表：供給(紅)、需求(藍)、成交走勢(綠) ----------
+function drawChart(cv,trades,res,curves){const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr;
+  const c=cv.getContext('2d');c.scale(dpr,dpr);c.clearRect(0,0,W,H);
+  const cs=getComputedStyle(document.body),tx=cs.color,L=36,R=8,Tp=10,Bt=24,pw=W-L-R,ph=H-Tp-Bt;
+  const D=curves?curves.demand:[],Su=curves?curves.supply:[],P=trades.map(t=>t.price);
+  const maxP=Math.max(10,...D,...Su,...P)*1.1,minP=Math.min(...D,...Su,...P,maxP)>0?0:0;
+  const n=Math.max(D.length,Su.length,P.length,5);
+  const X=q=>L+q/n*pw,Y=p=>Tp+ph-(p-minP)/(maxP-minP)*ph;
+  c.strokeStyle='#8884';c.fillStyle=tx;c.font='11px sans-serif';c.lineWidth=1;
+  for(let i=0;i<=4;i++){const p=minP+(maxP-minP)*i/4;c.beginPath();c.moveTo(L,Y(p));c.lineTo(W-R,Y(p));c.stroke();c.fillText(Math.round(p),2,Y(p)+4)}
+  for(let q=0;q<=n;q+=Math.ceil(n/8)){c.fillText(q,X(q)-3,H-8)}
+  const step=(arr,col)=>{if(!arr.length)return;c.strokeStyle=col;c.lineWidth=2.5;c.beginPath();c.moveTo(X(0),Y(arr[0]));arr.forEach((v,i)=>{c.lineTo(X(i),Y(v));c.lineTo(X(i+1),Y(v))});c.stroke()};
+  step(D,'#2563eb');step(Su,'#dc2626');
+  if(P.length){c.strokeStyle='#16a34a';c.fillStyle='#16a34a';c.lineWidth=2;c.beginPath();P.forEach((v,i)=>{const x=X(i+.5),y=Y(v);i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();P.forEach((v,i)=>{c.beginPath();c.arc(X(i+.5),Y(v),3.5,0,7);c.fill()})}
+  c.fillStyle=tx;c.fillText(curves?'藍：需求　紅：供給　綠：成交價（橫軸=數量／成交順序）':'成交順序 →',L+4,Tp+10)}
+
+listMarkets();setInterval(()=>{if(!$('home').classList.contains('hide'))listMarkets()},10000);
+</script>
+</body>
+</html>
