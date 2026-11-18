@@ -20,7 +20,8 @@ const ready = db.batch([
   `create table if not exists slots(id integer primary key autoincrement, market text, role text, value real, cash real, nick text)`,
   `create table if not exists orders(id integer primary key autoincrement, market text, round int, slot int, side text, price real, status text default 'open', ts int)`,
   `create table if not exists trades(id integer primary key autoincrement, market text, round int, seq int, buyer int, seller int, price real, ts int)`,
-  `create table if not exists snapshots(market text primary key, json text, ts int)`
+  `create table if not exists snapshots(market text primary key, json text, ts int)`,
+  `create table if not exists exports(market text, round int, ts int, primary key(market, round))`
 ], 'write');
 ready.catch(() => {});
 
@@ -65,6 +66,12 @@ async function results(m) {
   const supply = sl.filter(s => s.role === 'sell').map(s => s.value).sort((a, b) => a - b);
   let k = 0, max = 0;
   while (k < Math.min(demand.length, supply.length) && demand[k] >= supply[k]) { max += demand[k] - supply[k]; k++; }
+  let maxCS = 0, maxPS = 0, pLo = null, pHi = null;
+  if (k > 0) {
+    pLo = Math.max(supply[k - 1], k < demand.length ? demand[k] : -Infinity);
+    pHi = Math.min(demand[k - 1], k < supply.length ? supply[k] : Infinity);
+    for (let i = 0; i < k; i++) { maxCS += demand[i] - pLo; maxPS += pHi - supply[i]; }
+  }
   let cs = 0, ps = 0;
   const buyL = [], sellL = [];
   const nk = id => by[id].nick || ('#' + id);
@@ -77,7 +84,7 @@ async function results(m) {
   buyL.sort((x, y) => y.amt - x.amt); sellL.sort((x, y) => y.amt - x.amt);
   const win = l => (l.length && l[0].amt > 0) ? l.filter(x => x.amt === l[0].amt).map(x => x.id) : [];
   return {
-    cs, ps, total: cs + ps, max, eff: max ? (cs + ps) / max * 100 : 0, eqQ: k, qty: tr.length, demand, supply,
+    cs, ps, total: cs + ps, max, eff: max ? (cs + ps) / max * 100 : 0, eqQ: k, qty: tr.length, demand, supply, maxCS, maxPS, pLo, pHi,
     topCS: buyL.slice(0, 3), topPS: sellL.slice(0, 3), winIds: [...win(buyL), ...win(sellL)]
   };
 }
@@ -239,13 +246,64 @@ app.post('/api/cancel', A(async (q, r) => {
   r.json({ ok: 1 });
 }));
 
+const COLORS = ['#DBEAFE', '#DCFCE7', '#FEF9C3', '#FCE7F3', '#EDE9FE', '#FFEDD5']; // 各回合輪流使用的底色
+const r2 = x => +(+x).toFixed(2);
+app.post('/api/teacher/sheets', T, A(async (q, r) => {
+  const url = process.env.SHEETS_WEBHOOK_URL, tok = process.env.SHEETS_WEBHOOK_TOKEN;
+  if (!url || !tok) return r.json({ err: '尚未設定 Google 試算表連線（環境變數 SHEETS_WEBHOOK_URL、SHEETS_WEBHOOK_TOKEN）' });
+  const m = await M(q.body.name);
+  if (!m) return r.json({ err: '找不到市場' });
+  if (m.status !== 'ended' || !m.started_at) return r.json({ err: '請等本回合交易結束後再匯出' });
+  if ((await get('select ts from exports where market=? and round=?', [m.name, m.round])) && !q.body.force) return r.json({ dup: 1 });
+  const [sl, trs, rs] = await Promise.all([
+    slotsOf(m.name),
+    all('select * from trades where market=? and round=? order by seq', [m.name, m.round]),
+    results(m)
+  ]);
+  const by = Object.fromEntries(sl.map(s => [s.id, s]));
+  const nm = s => s.nick || ('未加入#' + s.id);
+  const ft = ts => new Date(ts).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }).replace(/[\u2009\u202f]/g, ' ');
+  const lim = (m.floor != null || m.cap != null) ? `本回合價格限制：下限 ${m.floor ?? '無'}、上限 ${m.cap ?? '無'}（理論值未納入價格限制）。` : '';
+  const payload = {
+    token: tok,
+    sheet: m.name.replace(/[:\\\/?*\[\]]/g, '_').slice(0, 90) || 'market',
+    color: COLORS[(m.round - 1) % COLORS.length],
+    title: `班級：${m.name}　第 ${m.round} 回合　交易時間：${ft(m.started_at)} ～ ${ft(m.ends_at)}`,
+    note: `理論最大消費者剩餘＝價格定在均衡價格區間最低價時的總和；理論最大生產者剩餘＝定在區間最高價時的總和（兩者不會同時發生）。${lim}`,
+    summary: [
+      ['實際消費者剩餘（總）', r2(rs.cs)], ['實際生產者剩餘（總）', r2(rs.ps)], ['實際總剩餘', r2(rs.total)],
+      ['理論最大消費者剩餘（總）', r2(rs.maxCS)], ['理論最大生產者剩餘（總）', r2(rs.maxPS)], ['理論最大總剩餘', r2(rs.max)],
+      ['市場效率', `${r2(rs.eff)}%`],
+      ['均衡價格區間', rs.pLo == null ? '無' : `${rs.pLo} 至 ${rs.pHi}`],
+      ['成交筆數', `成交 ${rs.qty} 筆（理論 ${rs.eqQ} 筆）`]
+    ],
+    buyers: sl.filter(s => s.role === 'buy').sort((a, b) => b.value - a.value).map(s => [nm(s), s.value]),
+    sellers: sl.filter(s => s.role === 'sell').sort((a, b) => a.value - b.value).map(s => [nm(s), s.value]),
+    trades: trs.map(t => [t.seq, ft(t.ts), nm(by[t.buyer]), by[t.buyer].value, nm(by[t.seller]), by[t.seller].value, t.price,
+      r2(by[t.buyer].value - t.price), r2(t.price - by[t.seller].value)])
+  };
+  const ac = new AbortController(), to = setTimeout(() => ac.abort(), 25000);
+  let txt;
+  try {
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload), redirect: 'follow', signal: ac.signal });
+    txt = await resp.text();
+  } catch (e) {
+    return r.json({ err: '無法連線到 Google 試算表：' + e.message });
+  } finally { clearTimeout(to); }
+  let res;
+  try { res = JSON.parse(txt); } catch { return r.json({ err: '試算表回應異常，請確認 Apps Script 已部署為網頁應用程式，且存取權為「任何人」' }); }
+  if (res.err) return r.json({ err: '試算表回報：' + res.err });
+  await run('insert or replace into exports values(?,?,?)', [m.name, m.round, now()]);
+  r.json({ ok: 1, url: res.url });
+}));
+
 app.get('/api/export', T, A(async (q, r) => {
   const ExcelJS = require('exceljs');
   const m = await M(q.query.name);
   if (!m) return r.status(404).send('not found');
   const sl = await slotsOf(m.name), by = Object.fromEntries(sl.map(s => [s.id, s]));
   const nm = id => (by[id] && (by[id].nick || `#${id}`)) || '';
-  const tm = ts => ts ? new Date(ts).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }) : '';
+  const tm = ts => ts ? new Date(ts).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }).replace(/[\u2009\u202f]/g, ' ') : '';
   const wb = new ExcelJS.Workbook();
   const w1 = wb.addWorksheet('市場設定');
   w1.addRow(['班級', m.name]); w1.addRow(['交易時間(分)', m.duration]); w1.addRow(['價格下限', m.floor ?? '無']); w1.addRow(['價格上限', m.cap ?? '無']); w1.addRow([]);
